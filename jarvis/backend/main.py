@@ -6,10 +6,8 @@ import platform
 import datetime
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
-import anthropic
 import httpx
 
 load_dotenv()
@@ -24,117 +22,188 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-WEATHER_API_KEY = os.getenv("WEATHER_API_KEY", "")
-WEATHER_CITY = os.getenv("WEATHER_CITY", "New York")
+# ── AI provider config ──────────────────────────────────────────────────────
+# Set AI_PROVIDER in .env to: groq | gemini | anthropic | ollama
+AI_PROVIDER        = os.getenv("AI_PROVIDER", "groq").lower()
+GROQ_API_KEY       = os.getenv("GROQ_API_KEY", "")
+GEMINI_API_KEY     = os.getenv("GEMINI_API_KEY", "")
+ANTHROPIC_API_KEY  = os.getenv("ANTHROPIC_API_KEY", "")
+OLLAMA_HOST        = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+OLLAMA_MODEL       = os.getenv("OLLAMA_MODEL", "llama3")
+
+WEATHER_API_KEY    = os.getenv("WEATHER_API_KEY", "")
+WEATHER_CITY       = os.getenv("WEATHER_CITY", "New York")
+# ────────────────────────────────────────────────────────────────────────────
 
 JARVIS_SYSTEM_PROMPT = """You are JARVIS (Just A Rather Very Intelligent System), Tony Stark's legendary AI assistant from Iron Man. You are:
 
 - Supremely intelligent, witty, and sophisticated
 - Calm, precise, and highly capable
 - Loyal and protective of your user
-- Capable of controlling systems, analyzing data, and providing expert guidance
 - Known for dry humor and occasional sarcasm when appropriate
-- Always addressing the user formally (e.g., "Sir" or "Ma'am") unless told otherwise
+- Always addressing the user as "Sir" or "Ma'am" unless told otherwise
 - Proactive in offering solutions and insights
 
-Your capabilities include:
-- Advanced data analysis and research
-- System monitoring and control
-- Weather and environmental data
-- Strategic planning and problem-solving
-- Scientific and technical expertise
-- Security and threat assessment
-
-Respond concisely but thoroughly. Be sophisticated and precise. Reference your capabilities as a Stark Industries AI. When asked about your status, provide system data. Always maintain the JARVIS persona — never break character.
+Respond concisely but thoroughly. Be sophisticated and precise. Maintain the JARVIS persona at all times.
 
 Current date and time: {datetime}
 System: {system_info}
 """
 
-conversation_history = []
+conversation_history: list[dict] = []
 
 
 class ChatRequest(BaseModel):
     message: str
-    conversation_id: str = "default"
-
-
-class SystemInfo(BaseModel):
-    pass
 
 
 def get_system_info() -> dict:
-    cpu = psutil.cpu_percent(interval=0.1)
-    memory = psutil.virtual_memory()
-    disk = psutil.disk_usage("/")
+    cpu     = psutil.cpu_percent(interval=0.1)
+    mem     = psutil.virtual_memory()
+    disk    = psutil.disk_usage("/")
     battery = psutil.sensors_battery() if hasattr(psutil, "sensors_battery") else None
-    net_io = psutil.net_io_counters()
-
+    net     = psutil.net_io_counters()
     return {
-        "cpu_percent": cpu,
-        "memory_percent": memory.percent,
-        "memory_used_gb": round(memory.used / (1024**3), 2),
-        "memory_total_gb": round(memory.total / (1024**3), 2),
-        "disk_percent": disk.percent,
-        "disk_used_gb": round(disk.used / (1024**3), 2),
-        "disk_total_gb": round(disk.total / (1024**3), 2),
-        "battery_percent": battery.percent if battery else None,
-        "battery_charging": battery.power_plugged if battery else None,
-        "platform": platform.system(),
-        "processor": platform.processor(),
-        "bytes_sent_mb": round(net_io.bytes_sent / (1024**2), 2),
-        "bytes_recv_mb": round(net_io.bytes_recv / (1024**2), 2),
+        "cpu_percent":     cpu,
+        "memory_percent":  mem.percent,
+        "memory_used_gb":  round(mem.used  / 1024**3, 2),
+        "memory_total_gb": round(mem.total / 1024**3, 2),
+        "disk_percent":    disk.percent,
+        "disk_used_gb":    round(disk.used  / 1024**3, 2),
+        "disk_total_gb":   round(disk.total / 1024**3, 2),
+        "battery_percent": battery.percent      if battery else None,
+        "battery_charging":battery.power_plugged if battery else None,
+        "platform":        platform.system(),
+        "bytes_sent_mb":   round(net.bytes_sent / 1024**2, 2),
+        "bytes_recv_mb":   round(net.bytes_recv / 1024**2, 2),
     }
 
 
-async def get_weather(city: str = None) -> dict:
+async def get_weather(city: str | None = None) -> dict:
     target = city or WEATHER_CITY
     if not WEATHER_API_KEY:
-        return {
-            "city": target,
-            "temp": 22,
-            "feels_like": 20,
-            "humidity": 60,
-            "description": "Clear skies",
-            "wind_speed": 5.2,
-            "icon": "01d",
-            "demo": True,
-        }
+        return {"city": target, "temp": 22, "feels_like": 20, "humidity": 60,
+                "description": "Clear skies", "wind_speed": 5.2, "icon": "01d", "demo": True}
     try:
         async with httpx.AsyncClient() as client:
-            resp = await client.get(
+            r = await client.get(
                 "https://api.openweathermap.org/data/2.5/weather",
                 params={"q": target, "appid": WEATHER_API_KEY, "units": "metric"},
                 timeout=5.0,
             )
-            data = resp.json()
+            d = r.json()
             return {
-                "city": data["name"],
-                "temp": round(data["main"]["temp"]),
-                "feels_like": round(data["main"]["feels_like"]),
-                "humidity": data["main"]["humidity"],
-                "description": data["weather"][0]["description"].title(),
-                "wind_speed": data["wind"]["speed"],
-                "icon": data["weather"][0]["icon"],
-                "demo": False,
+                "city":        d["name"],
+                "temp":        round(d["main"]["temp"]),
+                "feels_like":  round(d["main"]["feels_like"]),
+                "humidity":    d["main"]["humidity"],
+                "description": d["weather"][0]["description"].title(),
+                "wind_speed":  d["wind"]["speed"],
+                "icon":        d["weather"][0]["icon"],
+                "demo":        False,
             }
     except Exception:
-        return {
-            "city": target,
-            "temp": 22,
-            "feels_like": 20,
-            "humidity": 60,
-            "description": "Clear skies",
-            "wind_speed": 5.2,
-            "icon": "01d",
-            "demo": True,
-        }
+        return {"city": target, "temp": 22, "feels_like": 20, "humidity": 60,
+                "description": "Clear skies", "wind_speed": 5.2, "icon": "01d", "demo": True}
 
+
+def build_system_prompt() -> str:
+    now     = datetime.datetime.now().strftime("%A, %B %d, %Y at %H:%M:%S")
+    sysinfo = json.dumps(get_system_info(), indent=2)
+    return JARVIS_SYSTEM_PROMPT.format(datetime=now, system_info=sysinfo)
+
+
+async def chat_groq(message: str) -> str:
+    from groq import Groq
+    client = Groq(api_key=GROQ_API_KEY)
+    msgs = [{"role": "system", "content": build_system_prompt()}]
+    for h in conversation_history[-20:]:
+        msgs.append({"role": h["role"], "content": h["content"]})
+    msgs.append({"role": "user", "content": message})
+    resp = client.chat.completions.create(
+        model="llama3-8b-8192",   # free & fast
+        messages=msgs,
+        max_tokens=1024,
+    )
+    return resp.choices[0].message.content
+
+
+async def chat_gemini(message: str) -> str:
+    import google.generativeai as genai
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel(
+        "gemini-1.5-flash",
+        system_instruction=build_system_prompt(),
+    )
+    history = []
+    for h in conversation_history[-20:]:
+        role = "user" if h["role"] == "user" else "model"
+        history.append({"role": role, "parts": [h["content"]]})
+    chat = model.start_chat(history=history)
+    resp = chat.send_message(message)
+    return resp.text
+
+
+async def chat_anthropic(message: str) -> str:
+    import anthropic
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    msgs = []
+    for h in conversation_history[-20:]:
+        msgs.append({"role": h["role"], "content": h["content"]})
+    msgs.append({"role": "user", "content": message})
+    resp = client.messages.create(
+        model="claude-opus-4-8",
+        max_tokens=1024,
+        system=build_system_prompt(),
+        messages=msgs,
+    )
+    return resp.content[0].text
+
+
+async def chat_ollama(message: str) -> str:
+    msgs = [{"role": "system", "content": build_system_prompt()}]
+    for h in conversation_history[-20:]:
+        msgs.append({"role": h["role"], "content": h["content"]})
+    msgs.append({"role": "user", "content": message})
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        r = await client.post(
+            f"{OLLAMA_HOST}/api/chat",
+            json={"model": OLLAMA_MODEL, "messages": msgs, "stream": False},
+        )
+        return r.json()["message"]["content"]
+
+
+async def chat_ai(message: str) -> str:
+    provider = AI_PROVIDER
+
+    # Auto-detect which key is configured if provider not explicitly set
+    if not GROQ_API_KEY and not GEMINI_API_KEY and not ANTHROPIC_API_KEY and provider != "ollama":
+        return (
+            "Sir, I require an AI API key to function. "
+            "Please add a free GROQ_API_KEY to jarvis/backend/.env — "
+            "sign up free at console.groq.com."
+        )
+
+    try:
+        if provider == "groq":
+            return await chat_groq(message)
+        elif provider == "gemini":
+            return await chat_gemini(message)
+        elif provider == "anthropic":
+            return await chat_anthropic(message)
+        elif provider == "ollama":
+            return await chat_ollama(message)
+        else:
+            return await chat_groq(message)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Routes ──────────────────────────────────────────────────────────────────
 
 @app.get("/")
 async def root():
-    return {"status": "JARVIS online", "version": "1.0.0"}
+    return {"status": "JARVIS online", "provider": AI_PROVIDER}
 
 
 @app.get("/api/system")
@@ -143,51 +212,18 @@ async def system_info():
 
 
 @app.get("/api/weather")
-async def weather(city: str = None):
+async def weather(city: str | None = None):
     return await get_weather(city)
 
 
 @app.post("/api/chat")
 async def chat(request: ChatRequest):
-    if not ANTHROPIC_API_KEY:
-        return {
-            "response": "Sir, I'm afraid my neural interface requires an Anthropic API key to be configured. Please set ANTHROPIC_API_KEY in the environment file. For now, I remain in standby mode.",
-            "model": "demo",
-        }
-
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    sysinfo = get_system_info()
-    now = datetime.datetime.now().strftime("%A, %B %d, %Y at %H:%M:%S")
-
-    system = JARVIS_SYSTEM_PROMPT.format(
-        datetime=now,
-        system_info=json.dumps(sysinfo, indent=2),
-    )
-
-    # Build messages list
-    messages = []
-    for entry in conversation_history[-20:]:
-        messages.append({"role": entry["role"], "content": entry["content"]})
-    messages.append({"role": "user", "content": request.message})
-
-    try:
-        response = client.messages.create(
-            model="claude-opus-4-8",
-            max_tokens=1024,
-            system=system,
-            messages=messages,
-        )
-        assistant_msg = response.content[0].text
-
-        conversation_history.append({"role": "user", "content": request.message})
-        conversation_history.append({"role": "assistant", "content": assistant_msg})
-
-        if len(conversation_history) > 100:
-            conversation_history.clear()
-
-        return {"response": assistant_msg, "model": "claude-opus-4-8"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    reply = await chat_ai(request.message)
+    conversation_history.append({"role": "user",      "content": request.message})
+    conversation_history.append({"role": "assistant", "content": reply})
+    if len(conversation_history) > 100:
+        conversation_history.clear()
+    return {"response": reply, "provider": AI_PROVIDER}
 
 
 @app.delete("/api/chat")
@@ -201,8 +237,7 @@ async def websocket_system(websocket: WebSocket):
     await websocket.accept()
     try:
         while True:
-            data = get_system_info()
-            await websocket.send_json(data)
+            await websocket.send_json(get_system_info())
             await asyncio.sleep(2)
     except WebSocketDisconnect:
         pass
