@@ -121,7 +121,7 @@ async def chat_groq(message: str) -> str:
         msgs.append({"role": h["role"], "content": h["content"]})
     msgs.append({"role": "user", "content": message})
     resp = client.chat.completions.create(
-        model="llama3-8b-8192",   # free & fast
+        model="llama-3.3-70b-versatile",   # free & fast
         messages=msgs,
         max_tokens=1024,
     )
