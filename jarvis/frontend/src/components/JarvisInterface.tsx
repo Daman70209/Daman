@@ -83,17 +83,30 @@ export default function JarvisInterface() {
   const speak = useCallback((text: string) => {
     if (!synthRef.current) return;
     synthRef.current.cancel();
+
     const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 0.9;
-    utterance.pitch = 0.85;
+    utterance.rate = 1.15;
+    utterance.pitch = 0.78;
     utterance.volume = 1;
-    // Try to find a nice British voice (like JARVIS)
+
     const voices = synthRef.current.getVoices();
-    const britishMale = voices.find(
-      (v) => v.lang.includes('en-GB') && v.name.toLowerCase().includes('male')
-    ) || voices.find((v) => v.lang.includes('en-GB'))
-      || voices.find((v) => v.lang.includes('en'));
-    if (britishMale) utterance.voice = britishMale;
+
+    // Priority: Daniel (Apple British), any en-GB, fallback en
+    const preferred = [
+      'Daniel',        // macOS British male — closest to JARVIS
+      'Arthur',        // macOS British male
+      'Malcolm',
+      'Oliver',
+    ];
+    let chosen = null;
+    for (const name of preferred) {
+      chosen = voices.find((v) => v.name === name) || null;
+      if (chosen) break;
+    }
+    if (!chosen) chosen = voices.find((v) => v.lang === 'en-GB') || null;
+    if (!chosen) chosen = voices.find((v) => v.lang.startsWith('en')) || null;
+    if (chosen) utterance.voice = chosen;
+
     utterance.onstart = () => setSpeaking(true);
     utterance.onend = () => setSpeaking(false);
     synthRef.current.speak(utterance);
